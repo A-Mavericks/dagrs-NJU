@@ -10,7 +10,7 @@ use super::information_packet::Content;
 /// A hash-table mapping `NodeId` to `OutChannel`. In **Dagrs**, each `Node` stores output
 /// channels in this map, enabling `Node` to send information packets to other `Node`s.
 #[derive(Default)]
-pub struct OutChannels(pub HashMap<NodeId, Arc<OutChannel>>);
+pub struct OutChannels(pub(crate) HashMap<NodeId, Arc<OutChannel>>);
 
 impl OutChannels {
     /// Perform a blocking send on the outcoming channel from `NodeId`.

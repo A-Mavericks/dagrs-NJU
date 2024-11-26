@@ -1,12 +1,17 @@
 use std::{
     collections::HashMap,
+    panic::{self, AssertUnwindSafe},
     sync::{atomic::AtomicBool, Arc},
 };
 
 use crate::{
-    connection::in_channel::InChannel, connection::information_packet::Content,
-    connection::out_channel::OutChannel, node::node::Node, node::node::NodeId,
-    node::node::NodeTable, utils::env::EnvVar, utils::execstate::ExecState,
+    connection::{
+        in_channel::InChannel,
+        information_packet::Content,
+        out_channel::{self, OutChannel},
+    },
+    node::node::{Node, NodeId, NodeTable},
+    utils::{env::EnvVar, execstate::ExecState},
 };
 
 use log::{debug, error};
@@ -73,11 +78,40 @@ impl Graph {
     }
     /// Adds an edge between two nodes in the `Graph`.
     pub fn add_edge(&mut self, from_id: NodeId, to_ids: Vec<NodeId>) {
-        if to_ids.len() > 1 {
+        let from_node = self.nodes.get_mut(&from_id).unwrap();
+        let from_channel = from_node.output_channels();
+        if from_channel.0.is_empty() {
+            if to_ids.len() > 1 {
+                let (bcst_sender, _) = broadcast::channel::<Content>(32);
+                {
+                    for to_id in &to_ids {
+                        from_channel
+                            .insert(*to_id, Arc::new(OutChannel::Bcst(bcst_sender.clone())));
+                    }
+                }
+                for to_id in &to_ids {
+                    if let Some(to_node) = self.nodes.get_mut(to_id) {
+                        let to_channel = to_node.input_channels();
+                        let receiver = bcst_sender.subscribe();
+                        to_channel.insert(from_id, Arc::new(Mutex::new(InChannel::Bcst(receiver))));
+                    }
+                }
+            } else if let Some(to_id) = to_ids.get(0) {
+                let (tx, rx) = mpsc::channel::<Content>(32);
+                {
+                    from_channel.insert(*to_id, Arc::new(OutChannel::Mpsc(tx.clone())));
+                }
+                if let Some(to_node) = self.nodes.get_mut(to_id) {
+                    let to_channel = to_node.input_channels();
+                    to_channel.insert(from_id, Arc::new(Mutex::new(InChannel::Mpsc(rx))));
+                }
+            }
+        } else {
             let (bcst_sender, _) = broadcast::channel::<Content>(32);
             {
-                let from_node = self.nodes.get_mut(&from_id).unwrap();
-                let from_channel = from_node.output_channels();
+                for (node_id, channel) in from_channel.0.clone().iter() {
+                    from_channel.insert(*node_id, Arc::new(OutChannel::Bcst(bcst_sender.clone())));
+                }
                 for to_id in &to_ids {
                     from_channel.insert(*to_id, Arc::new(OutChannel::Bcst(bcst_sender.clone())));
                 }
@@ -88,17 +122,6 @@ impl Graph {
                     let receiver = bcst_sender.subscribe();
                     to_channel.insert(from_id, Arc::new(Mutex::new(InChannel::Bcst(receiver))));
                 }
-            }
-        } else if let Some(to_id) = to_ids.get(0) {
-            let (tx, rx) = mpsc::channel::<Content>(32);
-            {
-                let from_node = self.nodes.get_mut(&from_id).unwrap();
-                let from_channel = from_node.output_channels();
-                from_channel.insert(*to_id, Arc::new(OutChannel::Mpsc(tx.clone())));
-            }
-            if let Some(to_node) = self.nodes.get_mut(to_id) {
-                let to_channel = to_node.input_channels();
-                to_channel.insert(from_id, Arc::new(Mutex::new(InChannel::Mpsc(rx))));
             }
         }
     }
@@ -120,26 +143,38 @@ impl Graph {
         } else {
             for (node_id, node) in &mut self.nodes {
                 let execute_state = self.execute_states[&node_id].clone();
-                let out = node.run(Arc::clone(&self.env));
-                if out.is_err() {
-                    let error = out.get_err().unwrap_or("".to_string());
-                    error!(
-                        "Execution failed [name: {}, id: {}] - {}",
-                        node.name(),
-                        node_id.0,
-                        error
-                    );
-                    execute_state.set_output(out);
-                    execute_state.exe_fail();
-                } else {
-                    execute_state.set_output(out);
-                    execute_state.exe_success();
-                    debug!(
-                        "Execution succeed [name: {}, id: {}]",
-                        node.name(),
-                        node_id.0
-                    );
-                }
+                panic::catch_unwind(AssertUnwindSafe(|| node.run(Arc::clone(&self.env))))
+                    .map_or_else(
+                        |_| {
+                            error!(
+                                "Execution failed [name: {}, id: {}]",
+                                node.name(),
+                                node_id.0,
+                            );
+                        },
+                        |out| {
+                            // Store execution results
+                            if out.is_err() {
+                                let error = out.get_err().unwrap_or("".to_string());
+                                error!(
+                                    "Execution failed [name: {}, id: {}] - {}",
+                                    node.name(),
+                                    node_id.0,
+                                    error
+                                );
+                                execute_state.set_output(out);
+                                execute_state.exe_fail();
+                            } else {
+                                execute_state.set_output(out);
+                                execute_state.exe_success();
+                                debug!(
+                                    "Execution succeed [name: {}, id: {}]",
+                                    node.name(),
+                                    node_id.0
+                                );
+                            }
+                        },
+                    )
             }
         }
         self.is_active

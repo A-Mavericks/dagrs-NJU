@@ -10,7 +10,7 @@ use super::information_packet::Content;
 /// A hash-table mapping `NodeId` to `InChannel`. In **Dagrs**, each `Node` stores input
 /// channels in this map, enabling `Node` to receive information packets from other `Node`s.
 #[derive(Default)]
-pub struct InChannels(pub HashMap<NodeId, Arc<Mutex<InChannel>>>);
+pub struct InChannels(pub(crate) HashMap<NodeId, Arc<Mutex<InChannel>>>);
 
 impl InChannels {
     /// Perform a blocking receive on the incoming channel from `NodeId`.
