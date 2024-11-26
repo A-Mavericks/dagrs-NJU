@@ -5,11 +5,7 @@ use std::{
 };
 
 use crate::{
-    connection::{
-        in_channel::InChannel,
-        information_packet::Content,
-        out_channel::{self, OutChannel},
-    },
+    connection::{in_channel::InChannel, information_packet::Content, out_channel::OutChannel},
     node::node::{Node, NodeId, NodeTable},
     utils::{env::EnvVar, execstate::ExecState},
 };
@@ -77,6 +73,9 @@ impl Graph {
         self.nodes.insert(node.id(), node);
     }
     /// Adds an edge between two nodes in the `Graph`.
+    /// If the outgoing port of the sending node is empty and the number of receiving nodes is > 1, use the broadcast channel
+    /// An MPSC channel is used if the outgoing port of the sending node is empty and the number of receiving nodes is equal to 1
+    /// If the outgoing port of the sending node is not empty, adding any number of receiving nodes will change all relevant channels to broadcast
     pub fn add_edge(&mut self, from_id: NodeId, to_ids: Vec<NodeId>) {
         let from_node = self.nodes.get_mut(&from_id).unwrap();
         let from_channel = from_node.output_channels();
@@ -109,7 +108,7 @@ impl Graph {
         } else {
             let (bcst_sender, _) = broadcast::channel::<Content>(32);
             {
-                for (node_id, channel) in from_channel.0.clone().iter() {
+                for (node_id, _channel) in from_channel.0.clone().iter() {
                     from_channel.insert(*node_id, Arc::new(OutChannel::Bcst(bcst_sender.clone())));
                 }
                 for to_id in &to_ids {
@@ -225,11 +224,11 @@ mod tests {
         let mut node_table = NodeTable::new();
 
         let node_name = "Node X";
-        let mut node = DefaultNode::new(NodeName::from(node_name), &mut node_table);
+        let node = DefaultNode::new(NodeName::from(node_name), &mut node_table);
         let node_id = node.id();
 
         let node1_name = "Node Y";
-        let mut node1 = DefaultNode::with_action(
+        let node1 = DefaultNode::with_action(
             NodeName::from(node1_name),
             HelloAction::new(),
             &mut node_table,
